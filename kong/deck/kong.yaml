@@ -1,0 +1,41 @@
+_format_version: "3.0"
+
+
+consumer_groups:
+  - name: mcp-users
+  - name: mcp-developers  
+
+consumers:
+  - username: pverge2112
+    custom_id: github:pverge2112
+    groups:
+      - name: mcp-users
+      - name: mcp-developers
+
+services:
+- name: github-mcp-service
+  url: https://api.githubcopilot.com/mcp/
+  routes:
+  - name: github-mcp-metadata
+    paths: 
+    - /.well-known/oauth-protected-resource/github-mcp-metadata
+    plugins: 
+    - name: request-termination
+      _config: mcp-github-request-termination
+  - name: github-mcp-route
+    paths:
+      - /github-mcp
+    plugins:
+      - name: pre-function
+        _config: mcp-github-pre-function
+      - name: post-function
+        _config: mcp-github-post-function
+        ordering:
+          before:
+            access:
+              - ai-mcp-proxy
+      - name: ai-mcp-proxy
+        _config: mcp-github-ai-mcp-proxy
+      # - name: file-log
+      #   _config: mcp-file-log
+
