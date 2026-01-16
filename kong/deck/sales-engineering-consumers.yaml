@@ -1,0 +1,110 @@
+_format_version: "3.0"
+
+consumer_groups:
+  - name: team-sales-engineering
+    tags:
+      - github-mcp-test
+
+consumers:
+  - username: robincher
+    groups:
+      - name: team-sales-engineering
+  - username: doctorwu
+    groups:
+      - name: team-sales-engineering
+  - username: deepakgrewal
+    groups:
+      - name: team-sales-engineering
+  - username: bwolmarans
+    groups:
+      - name: team-sales-engineering
+  - username: ssorren
+    groups:
+      - name: team-sales-engineering
+  - username: DeclanPaulKeane
+    groups:
+      - name: team-sales-engineering
+  - username: jbrannst
+    groups:
+      - name: team-sales-engineering
+  - username: git-suraj
+    groups:
+      - name: team-sales-engineering
+  - username: gperanich
+    groups:
+      - name: team-sales-engineering
+  - username: deirdre-anderson
+    groups:
+      - name: team-sales-engineering
+  - username: felderi
+    groups:
+      - name: team-sales-engineering
+  - username: a-klitovchenko
+    groups:
+      - name: team-sales-engineering
+  - username: vrusso-kong
+    groups:
+      - name: team-sales-engineering
+  - username: RyanGrantom
+    groups:
+      - name: team-sales-engineering
+  - username: jmtalavera
+    groups:
+      - name: team-sales-engineering
+  - username: eugenetan01
+    groups:
+      - name: team-sales-engineering
+  - username: pverge2112
+    groups:
+      - name: team-sales-engineering
+  - username: CAcquaviva
+    groups:
+      - name: team-sales-engineering
+  - username: svenwal
+    groups:
+      - name: team-sales-engineering
+  - username: brunomandic
+    groups:
+      - name: team-sales-engineering
+  - username: degui-xu
+    groups:
+      - name: team-sales-engineering
+  - username: StSchSt
+    groups:
+      - name: team-sales-engineering
+  - username: akoshok1
+    groups:
+      - name: team-sales-engineering
+  - username: manibh-kong
+    groups:
+      - name: team-sales-engineering
+  - username: cdarvill
+    groups:
+      - name: team-sales-engineering
+  - username: be-kong
+    groups:
+      - name: team-sales-engineering
+  - username: hanswallentin
+    groups:
+      - name: team-sales-engineering
+  - username: macdonald-kong
+    groups:
+      - name: team-sales-engineering
+  - username: albellie
+    groups:
+      - name: team-sales-engineering
+  - username: baumanzee
+    groups:
+      - name: team-sales-engineering
+  - username: oliwynn-kong
+    groups:
+      - name: team-sales-engineering
+  - username: jmatis-kong
+    groups:
+      - name: team-sales-engineering
+  - username: chrisg-kong
+    groups:
+      - name: team-sales-engineering
+  - username: ashwin-somarajan-kong
+    groups:
+      - name: team-sales-engineering

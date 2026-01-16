@@ -1,17 +1,5 @@
 _format_version: "3.0"
 
-
-consumer_groups:
-  - name: mcp-users
-  - name: mcp-developers  
-
-consumers:
-  - username: pverge2112
-    custom_id: github:pverge2112
-    groups:
-      - name: mcp-users
-      - name: mcp-developers
-
 services:
 - name: github-mcp-service
   url: https://api.githubcopilot.com/mcp/
