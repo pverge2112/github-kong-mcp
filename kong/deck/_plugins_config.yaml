@@ -9,46 +9,9 @@ _plugin_configs:
   mcp-github-pre-function:
     access:
     - |-
-      -- Check for Authorization header
-            local auth_header = kong.request.get_header("authorization")
-
-            if not auth_header then
-                -- Define the custom WWW-Authenticate header
-                local headers = {
-                    ["Content-Type"] = "application/json",
-                    ["WWW-Authenticate"] = 'Bearer resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/github-mcp-metadata/", error="invalid_token"'
-                }
-
-                -- Return a 401 with custom headers and body
-                return kong.response.exit(401,
-                  {message = "Unauthorized"}, headers)
-            end
-
-  mcp-github-ai-mcp-proxy:
-    mode: passthrough-listener
-    include_consumer_groups: true
-    default_acl:
-    - scope: tools
-      allow:
-      - mcp-developers
-      - mcp-users
-    logging:
-      log_payloads: true
-      log_statistics: true
-      log_audits: true
-    tools:
-    - description: Create a new GitHub repository in your account or specified organization
-      name: create_repository
-      acl:
-        deny:
-        - mcp-developers
-
-  mcp-github-post-function:
-    access:
-    - |-
       -- Extract the Bearer token from Authorization header
       local auth_header = kong.request.get_header("authorization")
-
+      kong.log.info("Auth header: ", auth_header)
       if not auth_header then
         kong.log.err("No authorization header found in post-function")
         return kong.response.exit(401, {message = "Unauthorized"})
@@ -56,7 +19,7 @@ _plugin_configs:
 
       -- Extract token from "Bearer <token>" format
       local token = auth_header:match("^Bearer%s+(.+)$")
-
+      kong.log.info("Token: ", token) 
       if not token then
         kong.log.err("Invalid authorization header format")
         return kong.response.exit(401, {message = "Invalid authorization format"})
@@ -64,20 +27,24 @@ _plugin_configs:
 
       -- Make HTTP request to GitHub API to validate token and get user info
       local http = require "resty.http"
+      local cjson = require "cjson.safe"
       local httpc = http.new()
 
       -- Set timeout for the request (10 seconds)
       httpc:set_timeout(10000)
 
+      -- Common headers for GitHub API requests
+      local github_headers = {
+        ["Authorization"] = "Bearer " .. token,
+        ["Accept"] = "application/vnd.github+json",
+        ["User-Agent"] = "Kong-Gateway-MCP",
+        ["X-GitHub-Api-Version"] = "2022-11-28"
+      }
+
       -- Make request to GitHub User API
       local res, err = httpc:request_uri("https://api.github.com/user", {
         method = "GET",
-        headers = {
-          ["Authorization"] = "Bearer " .. token,
-          ["Accept"] = "application/vnd.github+json",
-          ["User-Agent"] = "Kong-Gateway-MCP",
-          ["X-GitHub-Api-Version"] = "2022-11-28"
-        }
+        headers = github_headers
       })
 
       -- Check for request errors
@@ -102,9 +69,7 @@ _plugin_configs:
       end
 
       -- Parse the JSON response
-      local cjson = require "cjson.safe"
       local user_data, decode_err = cjson.decode(res.body)
-
       if not user_data then
         kong.log.err("Failed to decode GitHub API response: ", decode_err)
         return kong.response.exit(500, {message = "Failed to parse user data"})
@@ -125,16 +90,15 @@ _plugin_configs:
 
       -- Try to find consumer by username matching GitHub login
       consumer, err = kong.db.consumers:select_by_username(github_login)
-
-        if err then
+      if err then
         kong.log.err("Database error while looking up consumer by login: ", err)
         return kong.response.exit(500, {message = "Database error"})
       end
 
+      --Let's verify if this is actually needed.
       -- Fallback: try with "github_" prefix for backwards compatibility
       if not consumer then
         consumer, err = kong.db.consumers:select_by_username("github_" .. github_login)
-
         if err then
           kong.log.err("Database error while looking up consumer with prefix: ", err)
           return kong.response.exit(500, {message = "Database error"})
@@ -144,50 +108,103 @@ _plugin_configs:
       -- If consumer exists, authenticate them
       if consumer then
         kong.log.info("Found existing consumer: ", consumer.username, " (ID: ", consumer.id, ")")
-
+        
         -- Authenticate the consumer for this request using Kong PDK
         kong.client.authenticate(consumer, nil)
-
-        -- Set the consumer group for the current request based on the consumer id
-        kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
-
-        # local groups = kong.client.get_consumer_groups()
-        # local group_names_only = {}
-
-        # for i,g in ipairs(groups) do
-        #   group_names_only[#group_names_only + 1] = g.name
-        #   kong.log.info("Consumer Group: ", g.name)
-        # end
-
-
+        
         -- Add consumer info to headers
         kong.service.request.set_header("X-Kong-Consumer-ID", consumer.id)
         kong.service.request.set_header("X-Kong-Consumer-Username", consumer.username)
-
+        
+      --Let's verify whether this is needed; may be for sharing with another plugin
         -- Store consumer in context
         kong.ctx.shared.consumer = consumer
       else
         kong.log.info("No Kong consumer found for GitHub user: ", github_login, " (ID: ", github_user_id, ") - continuing without consumer authentication")
       end
 
-      # -- Add GitHub user information to request headers for downstream processing
-      # kong.service.request.set_header("X-GitHub-User", github_login)
-      # kong.service.request.set_header("X-GitHub-User-ID", github_user_id)
+      -- ============================================================
+      -- FETCH GITHUB TEAMS AND MAP TO CONSUMER GROUPS
+      -- ============================================================
 
-      # if user_data.email then
-      #   kong.service.request.set_header("X-GitHub-User-Email", user_data.email)
-      # end
+      local teams_httpc = http.new()
+      teams_httpc:set_timeout(10000)
 
-      # if user_data.name then
-      #   kong.service.request.set_header("X-GitHub-User-Name", user_data.name)
-      # end
+      local teams_res, teams_err = teams_httpc:request_uri("https://api.github.com/user/teams", {
+        method = "GET",
+        headers = github_headers
+      })
 
-      # if user_data.type then
-      #   kong.service.request.set_header("X-GitHub-User-Type", user_data.type)
-      # end
-
-      # -- Store full user data in context for potential use by other plugins
-      # kong.ctx.shared.github_user = user_data
+      --Let's verify whether this is needed.
+      if not teams_res then
+        kong.log.warn("Failed to fetch GitHub teams: ", teams_err)
+        -- Fallback to consumer-based group assignment
+        if consumer then
+          kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
+        end
+      elseif teams_res.status == 200 then
+        local teams, teams_decode_err = cjson.decode(teams_res.body)
+        
+        if teams_decode_err then
+          kong.log.warn("Failed to decode GitHub teams response: ", teams_decode_err)
+          if consumer then
+            kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
+          end
+        elseif teams and #teams > 0 then
+          kong.log.info("User belongs to ", #teams, " GitHub team(s)")
+          
+          local matched_groups = {}
+          local matched_group_names = {}
+          
+          for _, team in ipairs(teams) do
+            local team_slug = team.slug
+            kong.log.debug("Checking for consumer group matching team: ", team_slug)
+            
+            -- Direct lookup - GitHub team slug = Kong consumer group name
+            local group, group_err = kong.db.consumer_groups:select_by_name(team_slug)
+            
+            if group_err then
+              kong.log.err("Database error looking up consumer group '", team_slug, "': ", group_err)
+            elseif group then
+              kong.log.info("Matched team '", team_slug, "' to consumer group '", group.name, "'")
+              table.insert(matched_groups, {
+                id = group.id,
+                name = group.name
+              })
+              table.insert(matched_group_names, group.name)
+            else
+              kong.log.debug("No consumer group found for team: ", team_slug)
+            end
+          end
+          
+          if #matched_groups > 0 then
+            kong.client.set_authenticated_consumer_groups(matched_groups)
+            kong.log.info("Set ", #matched_groups, " consumer group(s): ", table.concat(matched_group_names, ", "))
+            kong.service.request.set_header("X-Kong-Consumer-Groups", table.concat(matched_group_names, ","))
+            kong.ctx.shared.consumer_groups = matched_groups
+          else
+            kong.log.info("No matching consumer groups found for user's teams")
+            if consumer then
+              kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
+            end
+          end
+        else
+          kong.log.info("User has no GitHub teams (or teams not accessible with current token scopes)")
+          if consumer then
+            kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
+          end
+        end
+      elseif teams_res.status == 403 then
+        kong.log.warn("GitHub teams API returned 403 - token may need SSO authorization or read:org scope. Response: ", teams_res.body)
+        if consumer then
+          kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
+        end
+      else
+        kong.log.warn("GitHub teams API returned status: ", teams_res.status)
+        if consumer then
+          kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)
+        end
+      end
 
   # mcp-file-log:
   #   path: /tmp/mcp.json

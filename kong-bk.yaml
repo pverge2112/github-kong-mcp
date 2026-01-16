@@ -1,0 +1,457 @@
+_format_version: "3.0"
+_konnect:
+  control_plane_name: mcp-playground
+consumer_groups:
+- name: admin
+  tags:
+  - marketplace-mcp-test
+- name: developer
+  tags:
+  - marketplace-mcp-test
+- name: mcp-developers
+  tags:
+  - github-mcp-test
+- name: mcp-users
+  tags:
+  - github-mcp-test
+- name: suspended
+  tags:
+  - marketplace-mcp-test
+- name: team-sales-engineering
+consumers:
+- groups:
+  - name: admin
+    tags:
+    - marketplace-mcp-test
+  keyauth_credentials:
+  - key: alice-key
+    tags:
+    - marketplace-mcp-test
+  tags:
+  - marketplace-mcp-test
+  username: alice
+- groups:
+  - name: developer
+    tags:
+    - marketplace-mcp-test
+  keyauth_credentials:
+  - key: bob-key
+    tags:
+    - marketplace-mcp-test
+  tags:
+  - marketplace-mcp-test
+  username: bob
+- groups:
+  - name: suspended
+    tags:
+    - marketplace-mcp-test
+  keyauth_credentials:
+  - key: carol-key
+    tags:
+    - marketplace-mcp-test
+  tags:
+  - marketplace-mcp-test
+  username: carol
+- keyauth_credentials:
+  - key: eason-key
+    tags:
+    - marketplace-mcp-test
+  tags:
+  - marketplace-mcp-test
+  username: eason
+- custom_id: github:pverge2112
+  groups:
+  - name: mcp-developers
+    tags:
+    - github-mcp-test
+  - name: mcp-users
+    tags:
+    - github-mcp-test
+  - name: team-sales-engineering
+  tags:
+  - github-mcp-test
+  username: pverge2112
+services:
+- host: api.githubcopilot.com
+  name: github-mcp-service
+  path: /mcp/
+  port: 443
+  protocol: https
+  routes:
+  - name: github-mcp-metadata
+    paths:
+    - /.well-known/oauth-protected-resource/github-mcp-metadata
+    plugins:
+    - config:
+        body: '{ "resource": "http://localhost:8000/github-mcp", "authorization_servers":
+          [ "https://github.com/login/oauth" ] }'
+        content_type: application/json
+        status_code: 200
+      enabled: true
+      name: request-termination
+      tags:
+      - github-mcp-test
+    tags:
+    - github-mcp-test
+  - name: github-mcp-route
+    paths:
+    - /github-mcp
+    plugins:
+    - config:
+        default_acl:
+        - allow:
+          - team-sales-engineering
+          deny: null
+          scope: tools
+        include_consumer_groups: true
+        logging:
+          log_audits: true
+          log_payloads: true
+          log_statistics: true
+        mode: passthrough-listener
+        tools:
+        - acl:
+            allow: null
+            deny:
+            - team-sales-engineering
+          annotations: null
+          description: Create a new GitHub repository in your account or specified
+            organization
+          headers: null
+          host: null
+          method: null
+          name: create_repository
+          parameters: null
+          path: null
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+      enabled: true
+      name: ai-mcp-proxy
+      tags:
+      - github-mcp-test
+    - config:
+        access:
+        - "-- Extract the Bearer token from Authorization header\nlocal auth_header
+          = kong.request.get_header(\"authorization\")\nkong.log.info(\"Auth header:
+          \", auth_header)\nif not auth_header then\n  kong.log.err(\"No authorization
+          header found in post-function\")\n  return kong.response.exit(401, {message
+          = \"Unauthorized\"})\nend\n\n-- Extract token from \"Bearer <token>\" format\nlocal
+          token = auth_header:match(\"^Bearer%s+(.+)$\")\nkong.log.info(\"Token: \",
+          token) \nif not token then\n  kong.log.err(\"Invalid authorization header
+          format\")\n  return kong.response.exit(401, {message = \"Invalid authorization
+          format\"})\nend\n\n-- Make HTTP request to GitHub API to validate token
+          and get user info\nlocal http = require \"resty.http\"\nlocal cjson = require
+          \"cjson.safe\"\nlocal httpc = http.new()\n\n-- Set timeout for the request
+          (10 seconds)\nhttpc:set_timeout(10000)\n\n-- Common headers for GitHub API
+          requests\nlocal github_headers = {\n  [\"Authorization\"] = \"Bearer \"
+          .. token,\n  [\"Accept\"] = \"application/vnd.github+json\",\n  [\"User-Agent\"]
+          = \"Kong-Gateway-MCP\",\n  [\"X-GitHub-Api-Version\"] = \"2022-11-28\"\n}\n\n--
+          Make request to GitHub User API\nlocal res, err = httpc:request_uri(\"https://api.github.com/user\",
+          {\n  method = \"GET\",\n  headers = github_headers\n})\n\n-- Check for request
+          errors\nif not res then\n  kong.log.err(\"Failed to call GitHub API: \",
+          err)\n  return kong.response.exit(500, {message = \"Failed to validate token\"})\nend\n\n--
+          Check response status\nif res.status == 401 then\n  kong.log.warn(\"Invalid
+          or expired GitHub token\")\n  local headers = {\n    [\"Content-Type\"]
+          = \"application/json\",\n    [\"WWW-Authenticate\"] = 'Bearer resource_metadata=\"http://localhost:8000/.well-known/oauth-protected-resource/github-mcp-metadata/\",
+          error=\"invalid_token\"'\n  }\n  return kong.response.exit(401, {message
+          = \"Invalid or expired token\"}, headers)\nend\n\nif res.status ~= 200 then\n
+          \ kong.log.err(\"GitHub API returned status: \", res.status, \" body: \",
+          res.body)\n  return kong.response.exit(502, {message = \"GitHub API error\"})\nend\n\n--
+          Parse the JSON response\nlocal user_data, decode_err = cjson.decode(res.body)\nif
+          not user_data then\n  kong.log.err(\"Failed to decode GitHub API response:
+          \", decode_err)\n  return kong.response.exit(500, {message = \"Failed to
+          parse user data\"})\nend\n\n-- Log successful validation\nkong.log.info(\"Successfully
+          validated GitHub user: \", user_data.login or \"unknown\")\n\n-- Correlate
+          GitHub user to Kong Consumer using login field\nlocal consumer\nlocal github_login
+          = user_data.login\nlocal github_user_id = tostring(user_data.id)\n\nif not
+          github_login then\n  kong.log.err(\"Missing GitHub login field\")\n  return
+          kong.response.exit(500, {message = \"Invalid user data from GitHub\"})\nend\n\n--
+          Try to find consumer by username matching GitHub login\nconsumer, err =
+          kong.db.consumers:select_by_username(github_login)\nif err then\n  kong.log.err(\"Database
+          error while looking up consumer by login: \", err)\n  return kong.response.exit(500,
+          {message = \"Database error\"})\nend\n\n--Let's verify if this is actually
+          needed.\n-- Fallback: try with \"github_\" prefix for backwards compatibility\nif
+          not consumer then\n  consumer, err = kong.db.consumers:select_by_username(\"github_\"
+          .. github_login)\n  if err then\n    kong.log.err(\"Database error while
+          looking up consumer with prefix: \", err)\n    return kong.response.exit(500,
+          {message = \"Database error\"})\n  end\nend\n\n-- If consumer exists, authenticate
+          them\nif consumer then\n  kong.log.info(\"Found existing consumer: \", consumer.username,
+          \" (ID: \", consumer.id, \")\")\n  \n  -- Authenticate the consumer for
+          this request using Kong PDK\n  kong.client.authenticate(consumer, nil)\n
+          \ \n  -- Add consumer info to headers\n  kong.service.request.set_header(\"X-Kong-Consumer-ID\",
+          consumer.id)\n  kong.service.request.set_header(\"X-Kong-Consumer-Username\",
+          consumer.username)\n  \n--Let's verify whether this is needed; may be for
+          sharing with another plugin\n  -- Store consumer in context\n  kong.ctx.shared.consumer
+          = consumer\nelse\n  kong.log.info(\"No Kong consumer found for GitHub user:
+          \", github_login, \" (ID: \", github_user_id, \") - continuing without consumer
+          authentication\")\nend\n\n-- ============================================================\n--
+          FETCH GITHUB TEAMS AND MAP TO CONSUMER GROUPS\n-- ============================================================\n\nlocal
+          teams_httpc = http.new()\nteams_httpc:set_timeout(10000)\n\nlocal teams_res,
+          teams_err = teams_httpc:request_uri(\"https://api.github.com/user/teams\",
+          {\n  method = \"GET\",\n  headers = github_headers\n})\n\n--Let's verify
+          whether this is needed.\nif not teams_res then\n  kong.log.warn(\"Failed
+          to fetch GitHub teams: \", teams_err)\n  -- Fallback to consumer-based group
+          assignment\n  if consumer then\n    kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)\n
+          \ end\nelseif teams_res.status == 200 then\n  local teams, teams_decode_err
+          = cjson.decode(teams_res.body)\n  \n  if teams_decode_err then\n    kong.log.warn(\"Failed
+          to decode GitHub teams response: \", teams_decode_err)\n    if consumer
+          then\n      kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)\n
+          \   end\n  elseif teams and #teams > 0 then\n    kong.log.info(\"User belongs
+          to \", #teams, \" GitHub team(s)\")\n    \n    local matched_groups = {}\n
+          \   local matched_group_names = {}\n    \n    for _, team in ipairs(teams)
+          do\n      local team_slug = team.slug\n      kong.log.debug(\"Checking for
+          consumer group matching team: \", team_slug)\n      \n      -- Direct lookup
+          - GitHub team slug = Kong consumer group name\n      local group, group_err
+          = kong.db.consumer_groups:select_by_name(team_slug)\n      \n      if group_err
+          then\n        kong.log.err(\"Database error looking up consumer group '\",
+          team_slug, \"': \", group_err)\n      elseif group then\n        kong.log.info(\"Matched
+          team '\", team_slug, \"' to consumer group '\", group.name, \"'\")\n        table.insert(matched_groups,
+          {\n          id = group.id,\n          name = group.name\n        })\n        table.insert(matched_group_names,
+          group.name)\n      else\n        kong.log.debug(\"No consumer group found
+          for team: \", team_slug)\n      end\n    end\n    \n    if #matched_groups
+          > 0 then\n      kong.client.set_authenticated_consumer_groups(matched_groups)\n
+          \     kong.log.info(\"Set \", #matched_groups, \" consumer group(s): \",
+          table.concat(matched_group_names, \", \"))\n      kong.service.request.set_header(\"X-Kong-Consumer-Groups\",
+          table.concat(matched_group_names, \",\"))\n      kong.ctx.shared.consumer_groups
+          = matched_groups\n    else\n      kong.log.info(\"No matching consumer groups
+          found for user's teams\")\n      if consumer then\n        kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)\n
+          \     end\n    end\n  else\n    kong.log.info(\"User has no GitHub teams
+          (or teams not accessible with current token scopes)\")\n    if consumer
+          then\n      kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)\n
+          \   end\n  end\nelseif teams_res.status == 403 then\n  kong.log.warn(\"GitHub
+          teams API returned 403 - token may need SSO authorization or read:org scope.
+          Response: \", teams_res.body)\n  if consumer then\n    kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)\n
+          \ end\nelse\n  kong.log.warn(\"GitHub teams API returned status: \", teams_res.status)\n
+          \ if consumer then\n    kong.client.authenticate_consumer_group_by_consumer_id(consumer.id)\n
+          \ end\nend"
+      enabled: true
+      name: post-function
+      ordering:
+        before:
+          access:
+          - ai-mcp-proxy
+      tags:
+      - github-mcp-test
+    - config:
+        access:
+        - |-
+          -- Check for Authorization header
+                local auth_header = kong.request.get_header("authorization")
+
+                if not auth_header then
+                    -- Define the custom WWW-Authenticate header
+                    local headers = {
+                        ["Content-Type"] = "application/json",
+                        ["WWW-Authenticate"] = 'Bearer resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/github-mcp-metadata/", error="invalid_token"'
+                    }
+
+                    -- Return a 401 with custom headers and body
+                    return kong.response.exit(401,
+                      {message = "Unauthorized"}, headers)
+                end
+      enabled: true
+      name: pre-function
+      tags:
+      - github-mcp-test
+    tags:
+    - github-mcp-test
+  tags:
+  - github-mcp-test
+- host: host.docker.internal
+  name: mcp-acl-service
+  path: /mcp
+  port: 3001
+  routes:
+  - name: mcp-acl-route
+    paths:
+    - /mcp
+    plugins:
+    - config:
+        default_acl:
+        - allow:
+          - developer
+          - admin
+          deny:
+          - suspended
+          scope: tools
+        include_consumer_groups: true
+        logging:
+          log_audits: true
+          log_statistics: true
+        mode: passthrough-listener
+        tools:
+        - acl:
+            allow:
+            - admin
+            - eason
+            deny:
+            - developer
+          annotations: null
+          description: List users
+          headers: null
+          host: null
+          method: null
+          name: list_users
+          parameters: null
+          path: null
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+        - acl:
+            allow:
+            - admin
+            - developer
+            deny: null
+          annotations: null
+          description: Get user
+          headers: null
+          host: null
+          method: null
+          name: get_user
+          parameters: null
+          path: null
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+        - acl:
+            allow:
+            - admin
+            - developer
+            deny: null
+          annotations: null
+          description: List orders
+          headers: null
+          host: null
+          method: null
+          name: list_orders
+          parameters: null
+          path: null
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+        - acl:
+            allow:
+            - admin
+            - developer
+            deny: null
+          annotations: null
+          description: List orders for users
+          headers: null
+          host: null
+          method: null
+          name: list_orders_for_user
+          parameters: null
+          path: null
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+        - acl:
+            allow:
+            - admin
+            deny:
+            - developer
+          annotations: null
+          description: Search orders by name (case-insensitive substring)
+          headers: null
+          host: null
+          method: null
+          name: search_orders
+          parameters: null
+          path: null
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+      enabled: true
+      name: ai-mcp-proxy
+      tags:
+      - marketplace-mcp-test
+    - config:
+        path: /tmp/mcp.json
+      enabled: true
+      name: file-log
+      tags:
+      - marketplace-mcp-test
+    - enabled: true
+      name: key-auth
+      tags:
+      - marketplace-mcp-test
+    tags:
+    - marketplace-mcp-test
+  tags:
+  - marketplace-mcp-test
+- host: host.docker.internal
+  name: mcp-service
+  port: 3000
+  routes:
+  - name: mcp-route
+    paths:
+    - /marketplace
+    plugins:
+    - config:
+        mode: conversion-listener
+        server:
+          timeout: 60000
+        tools:
+        - acl: null
+          annotations:
+            destructive_hint: null
+            idempotent_hint: null
+            open_world_hint: null
+            read_only_hint: null
+            title: Get users
+          description: Get users
+          headers: null
+          host: null
+          method: GET
+          name: get-users
+          parameters:
+          - description: Optional user ID
+            in: query
+            name: id
+            required: false
+            schema:
+              type: string
+          path: /marketplace/users
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+        - acl: null
+          annotations:
+            destructive_hint: null
+            idempotent_hint: null
+            open_world_hint: null
+            read_only_hint: null
+            title: User ID to filter orders
+          description: Get orders for a user
+          headers: null
+          host: null
+          method: GET
+          name: get-orders-for-user
+          parameters:
+          - description: User ID to filter orders
+            in: query
+            name: userid
+            required: true
+            schema:
+              type: string
+          path: /marketplace/orders
+          query: null
+          request_body: null
+          responses: null
+          scheme: null
+      enabled: true
+      name: ai-mcp-proxy
+      tags:
+      - mcp-marketplace-api-wrapper
+    tags:
+    - mcp-marketplace-api-wrapper
+  tags:
+  - mcp-marketplace-api-wrapper

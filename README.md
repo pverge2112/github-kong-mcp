@@ -14,7 +14,11 @@ MCP Client (Claude Code)
 Kong Gateway (this config)
     ↓ (token validation)
 GitHub User API
-    ↓ (consumer correlation)
+    ↓ (team membership)
+GitHub Teams API
+    ↓ (team → group mapping)
+Kong Consumer Groups
+    ↓ (ACL enforcement)
 GitHub MCP API
 ```
 
@@ -22,8 +26,9 @@ GitHub MCP API
 
 ### Authentication & Authorization
 - **OAuth 2.0 Bearer Token Validation**: Validates GitHub OAuth tokens against GitHub's User API
-- **Consumer Correlation**: Automatically maps GitHub users to Kong consumers based on username
-- **Consumer Groups**: Organizes users into `mcp-users` and `mcp-developers` groups
+- **Team-Based Access Control**: Automatically maps GitHub team memberships to Kong consumer groups
+- **Consumer Correlation**: Optionally maps GitHub users to Kong consumers based on username
+- **Dynamic Group Assignment**: Users inherit permissions from their GitHub team memberships in real-time
 - **Tool-Level ACLs**: Fine-grained access control for individual MCP tools
 
 ### Security
@@ -54,9 +59,11 @@ Core authentication logic:
 1. Extracts Bearer token from Authorization header
 2. Validates token with GitHub User API
 3. Retrieves GitHub user information
-4. Correlates GitHub username to Kong consumer
-5. Authenticates consumer and sets consumer groups
-6. Adds consumer context for downstream processing
+4. Correlates GitHub username to Kong consumer (if consumer exists)
+5. Fetches user's GitHub teams via `/user/teams` endpoint
+6. Maps GitHub team slugs to Kong consumer groups (direct name match)
+7. Authenticates with matched consumer groups or falls back to consumer-based groups
+8. Adds consumer context and group information for downstream processing
 
 #### `mcp-github-ai-mcp-proxy`
 Configures the AI MCP proxy plugin:
@@ -74,9 +81,40 @@ Deck configuration with tag selector `github-mcp-test` for deployment management
 
 ## Access Control Model
 
+### GitHub Teams to Consumer Groups
+
+The gateway automatically maps GitHub team membership to Kong consumer groups for dynamic, team-based access control:
+
+**How it works:**
+1. After validating the GitHub token, the gateway fetches the user's team memberships via the GitHub `/user/teams` API
+2. For each team the user belongs to, it looks for a Kong consumer group with a matching name (using the team's `slug` field)
+3. All matching consumer groups are automatically assigned to the request
+4. If no teams match or the teams API is unavailable, it falls back to consumer-based group assignment
+
+**Example Mapping:**
+```
+GitHub Team Slug          →  Kong Consumer Group
+──────────────────────────────────────────────────
+engineering               →  engineering
+mcp-users                 →  mcp-users
+platform-team             →  platform-team
+```
+
+**Token Requirements:**
+- The GitHub OAuth token must have the `read:org` scope to access team memberships
+- If SSO is enabled on the GitHub organization, the token may need SSO authorization
+- Without proper scopes, the gateway logs a warning and falls back to consumer-based groups
+
+**Benefits:**
+- **No manual group assignment**: Users automatically inherit permissions from their GitHub team memberships
+- **Centralized management**: Team changes in GitHub immediately reflect in Kong access controls
+- **Multi-team support**: Users in multiple teams receive all corresponding consumer group permissions
+
 ### Consumer Groups
+Kong consumer groups control access to MCP tools. Example groups:
 - **mcp-users**: Standard users with default tool access
 - **mcp-developers**: Developer users with restricted access to certain tools
+- **engineering**: Custom team-based group for engineering team members
 
 ### Tool-Level Permissions
 Individual MCP tools can have custom ACLs. Example:
@@ -86,7 +124,23 @@ This allows fine-grained control over which users can perform specific GitHub op
 
 ## Adding New Consumers
 
-To add a new user, add an entry to the `consumers` section in kong/deck/kong.yaml:
+### Team-Based Access (Recommended)
+
+With GitHub team-based authentication, **users do not need to be manually added as consumers**. Simply:
+
+1. Create a Kong consumer group matching your GitHub team slug:
+   ```yaml
+   consumer_groups:
+     - name: engineering  # matches GitHub team slug
+   ```
+
+2. Configure tool ACLs for that group in the MCP proxy plugin
+
+3. Add users to the GitHub team - they'll automatically get the corresponding permissions
+
+### Manual Consumer Addition (Optional)
+
+To add specific consumers or use consumer-based groups as fallback:
 
 ```yaml
 consumers:
@@ -96,7 +150,7 @@ consumers:
       - name: mcp-users
 ```
 
-The `username` should match the GitHub user's login name for automatic correlation.
+**Note**: The `username` should match the GitHub user's login name. Consumers are optional when using team-based authentication but provide a fallback if team lookup fails.
 
 ## Deployment
 
@@ -124,9 +178,11 @@ deck diff --state kong/deck
 3. **Post-Function Authentication**:
    - Extracts token from Bearer header
    - Calls GitHub User API to validate token and get user info
-   - Looks up Kong consumer by GitHub username
-   - Authenticates consumer and sets consumer groups
-   - Adds consumer context to request
+   - Looks up Kong consumer by GitHub username (optional)
+   - Fetches user's GitHub teams via `/user/teams` endpoint
+   - Maps team slugs to Kong consumer groups
+   - Authenticates with matched consumer groups or falls back to consumer-based groups
+   - Adds consumer and group context to request headers (`X-Kong-Consumer-Groups`)
 
 4. **MCP Proxy**:
    - Checks consumer group memberships against tool ACLs
@@ -152,6 +208,9 @@ The `/.well-known/oauth-protected-resource/github-mcp-metadata` endpoint provide
 - **User-Agent**: Identifies as `Kong-Gateway-MCP` to GitHub
 - **API Version**: Uses GitHub API version `2022-11-28`
 - **Consumer Lookup**: Tries direct username match first, falls back to `github_` prefix for backward compatibility
+- **Token Scopes**: OAuth token requires `read:org` scope for team-based authentication; without it, falls back to consumer-based groups
+- **Team Correlation**: GitHub team slug must exactly match Kong consumer group name (case-sensitive)
+- **Fallback Behavior**: If teams API fails (403, timeout, decode error), automatically falls back to consumer-based group assignment
 
 ## Logging
 
@@ -160,6 +219,15 @@ The configuration includes comprehensive logging:
 - Statistics for performance monitoring
 - Audit logs for compliance
 - Error logs for troubleshooting
+- GitHub team matching and consumer group assignments
+- Token validation results
+
+### Headers Added to Requests
+
+The authentication plugin adds the following headers to upstream requests:
+- `X-Kong-Consumer-ID`: Kong consumer UUID (if consumer exists)
+- `X-Kong-Consumer-Username`: Kong consumer username (if consumer exists)
+- `X-Kong-Consumer-Groups`: Comma-separated list of matched consumer group names
 
 ## Requirements
 
